@@ -33,12 +33,35 @@ async function addIdentityCommand(
 }
 
 // Helper function to read echo commands from the server
-async function readEchoCommand(client: net.Socket): Promise<any> {
+async function readEchoCommand(
+  client: net.Socket,
+  endianness: Endianness = Endianness.Little,
+): Promise<any> {
+  // Use a buffer to accumulate data in case of partial/fragmented TCP packets
+  let buffer = Buffer.alloc(0);
+
   return new Promise((resolve) => {
     client.on('data', (data) => {
-      const parsed = CommandParser.parse(data);
-      if (parsed.type === 'echo') {
-        resolve(parsed);
+      // Append new data to buffer
+      buffer = Buffer.concat([buffer, data]);
+
+      // Try to parse as many echo commands as possible
+      // Echo command: 1 byte command + N bytes payload (unknown length, so we treat all as one echo)
+      // We'll parse only if the first byte is 2 (echo)
+      if (buffer.length > 0 && buffer[0] === 2) {
+        // All bytes after the first are the echo payload
+        // Use Uint8Array for compatibility with CommandParser
+        const uint8 = new Uint8Array(buffer);
+        try {
+          const parsed = CommandParser.parse(uint8, endianness);
+          if (parsed.type === 'echo') {
+            resolve(parsed);
+            // Remove listener to avoid memory leak
+            client.removeAllListeners('data');
+          }
+        } catch (e) {
+          // Not enough data or parse error, wait for more
+        }
       }
     });
   });
@@ -106,7 +129,7 @@ describe('Server Connection', () => {
     expect(data).toEqual({
       type: 'echo',
       data: {
-        array: [1, 1, 0, 2, 0], // Move command now uses 16-bit values: command(1) + xPos(1,0) + yPos(2,0) in little endian
+        array: [1, 1, 0, 2, 0],
       },
     });
     client.end();
@@ -152,16 +175,78 @@ describe('Server Connection', () => {
     expect(data1).toEqual({
       type: 'echo',
       data: {
-        array: [1, 1, 0, 2, 0], // Move command now uses 16-bit values: command(1) + xPos(1,0) + yPos(2,0) in little endian
+        array: [1, 1, 0, 2, 0],
       },
     });
     expect(data2).toEqual({
       type: 'echo',
       data: {
-        array: [1, 3, 0, 4, 0], // Move command now uses 16-bit values: command(1) + xPos(3,0) + yPos(4,0) in little endian
+        array: [1, 3, 0, 4, 0],
       },
     });
     expect(data1).not.toEqual(data2);
+  });
+
+  test('should connect to the socket and receive position-update commands', async () => {
+    // Connect to the server as a client and also a client
+    const [robot, client] = await Promise.all([
+      connectToServer(),
+      connectToServer(),
+    ]);
+
+    // Send identity command to register as robot (vers: 1)
+    await addIdentityCommand(robot, 1);
+    // this will be the whiteboard/controller
+    await addIdentityCommand(client, 2);
+
+    // wait for the identity commands to be processed
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    robot.write(
+      CommandParser.encode('setConfig', {
+        isEcho: false,
+      }),
+    );
+    // We'll simulate a robot starting at (0,0) and easing to (100, 50) in 5 steps
+    const start = { x: 0, y: 0 };
+    const end = { x: 100, y: 50 };
+    const steps = 5;
+    const positions = [];
+    for (let i = 1; i <= steps; i++) {
+      const x = Math.round(start.x + ((end.x - start.x) * i) / steps);
+      const y = Math.round(start.y + ((end.y - start.y) * i) / steps);
+      positions.push({ x, y });
+    }
+
+    // Send position-update commands to the client (simulate server sending updates)
+    for (const pos of positions) {
+      const buf = CommandParser.encode('position-update', {
+        xPosition: pos.x,
+        yPosition: pos.y,
+      });
+      robot.write(buf);
+      console.log(`sent position-update command: ${pos.x}, ${pos.y}`);
+    }
+
+    // send a rewuest command
+    const getBuf = CommandParser.encode('request', {});
+    robot.write(getBuf);
+    // wait for the response
+    const data = await new Promise((resolve) => {
+      client.on('data', (data) => {
+        const parsed = CommandParser.parse(data, Endianness.Little);
+        console.log(parsed);
+        resolve(parsed);
+      });
+    });
+    robot.end();
+    client.end();
+    expect(data).toEqual({
+      type: 'get',
+      data: {
+        xPosition: 100,
+        yPosition: 50,
+      },
+    });
   });
 });
 
