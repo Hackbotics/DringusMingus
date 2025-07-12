@@ -16,6 +16,9 @@ export class ServerInfo extends Context.Tag('ServerInfo')<
 const program = Effect.fn('program')(function* () {
   const serverInfo = yield* ServerInfo;
   console.log('Hello there! The server is up.');
+
+  let robotPosition: { x: number; y: number } = { x: 0, y: 0 };
+  let clients: { socket: net.Socket; id: string; identity: 1 | 2 }[] = [];
   const server = net.createServer((socket) =>
     pipe(
       Effect.gen(function* () {
@@ -49,6 +52,11 @@ const program = Effect.fn('program')(function* () {
               console.log(
                 `[${randomIdentifier}] Verified who I am: ${whoAmI === 1 ? 'robot' : 'whiteboard/controller'}`,
               );
+              clients.push({
+                socket,
+                id: randomIdentifier,
+                identity: identityData.vers,
+              });
               if (identityData.shouldEcho) {
                 // Echo back the original command
                 const echoData = CommandParser.encode(
@@ -60,7 +68,7 @@ const program = Effect.fn('program')(function* () {
                 );
                 socket.write(echoData);
               }
-            } else if (serverInfo.isEcho) {
+            } else if (serverInfo.isEcho && command.type !== 'setConfig') {
               // Echo back the original command
               const echoData = CommandParser.encode(
                 'echo',
@@ -83,22 +91,68 @@ const program = Effect.fn('program')(function* () {
                   );
                   // TODO: Implement move logic
                   break;
-                case 'echo':
-                  const echoData = command.data as { array: number[] };
-                  console.log(
-                    `[${randomIdentifier}] Echo command with ${echoData.array.length} bytes`,
-                  );
-                  // TODO: Implement echo handling
-                  break;
                 case 'setConfig':
                   const configData = command.data as { isEcho?: boolean };
                   console.log(
                     `[${randomIdentifier}] SetConfig command: isEcho=${configData.isEcho}`,
                   );
-                  // TODO: Implement config setting
+                  serverInfo.isEcho = configData.isEcho ?? false;
+                  break;
+                case 'position-update':
+                  const positionUpdateData = command.data as {
+                    xPosition: number;
+                    yPosition: number;
+                  };
+                  console.log(
+                    `[${randomIdentifier}] PositionUpdate command: x=${positionUpdateData.xPosition}, y=${positionUpdateData.yPosition}`,
+                  );
+                  robotPosition = {
+                    x: positionUpdateData.xPosition,
+                    y: positionUpdateData.yPosition,
+                  };
+                  console.log(
+                    `[${randomIdentifier}] Robot position updated: x=${robotPosition.x}, y=${robotPosition.y}`,
+                  );
+                  break;
+                case 'get':
+                  const getData = command.data as {
+                    xPosition: number;
+                    yPosition: number;
+                  };
+                  console.log(
+                    `[${randomIdentifier}] Get command: x=${getData.xPosition}, y=${getData.yPosition}`,
+                  );
+                  // TODO: Implement get logic
+                  break;
+                case 'request':
+                  console.log(`[${randomIdentifier}] Request command`);
+                  console.log(
+                    `[${randomIdentifier}] Clients Amount:`,
+                    clients.length,
+                  );
+                  for (const client of clients) {
+                    if (client.identity === 2) {
+                      client.socket.write(
+                        CommandParser.encode(
+                          'get',
+                          {
+                            xPosition: robotPosition.x,
+                            yPosition: robotPosition.y,
+                          },
+                          serverInfo.endianness ?? Endianness.Little,
+                        ),
+                      );
+                      console.log(
+                        `[${randomIdentifier}] Sent get command to ${client.id}`,
+                      );
+                    }
+                  }
                   break;
               }
             }
+            console.log(
+              `[${randomIdentifier}] Command processed: ${command.type} (Commands left: ${commandParser.getBufferSize()})`,
+            );
           }
 
           // Log partial command preview for debugging

@@ -2,6 +2,8 @@
 // 2 is going to be an echo-type
 // 3 is going to be an identity command
 // 4 is going to be a set-config command
+// 5 is going to be a position-update command
+// 6 is going to be a get command
 
 export enum Endianness {
   Little = 'little',
@@ -18,10 +20,23 @@ function match(command: number): CommandTypes | undefined {
       return 'identity' as const;
     case 4:
       return 'setConfig' as const;
+    case 5:
+      return 'position-update' as const;
+    case 6:
+      return 'get' as const;
+    case 7:
+      return 'request' as const;
   }
 }
 
-type CommandTypes = 'move' | 'echo' | 'identity' | 'setConfig';
+type CommandTypes =
+  | 'move'
+  | 'echo'
+  | 'identity'
+  | 'setConfig'
+  | 'position-update'
+  | 'get'
+  | 'request';
 
 type CommandDatas = {
   move: {
@@ -38,6 +53,18 @@ type CommandDatas = {
   };
   setConfig: {
     isEcho?: boolean;
+  };
+  'position-update': {
+    xPosition: number;
+    yPosition: number;
+  };
+  get: {
+    xPosition: number;
+    yPosition: number;
+  };
+  request: {
+    xPosition: number;
+    yPosition: number;
   };
 };
 
@@ -155,6 +182,20 @@ export class CommandParser {
     return commandType === 'setConfig';
   }
 
+  static isPositionUpdateCommandType(
+    commandType: unknown,
+  ): commandType is 'position-update' {
+    return commandType === 'position-update';
+  }
+
+  static isGetCommandType(commandType: unknown): commandType is 'get' {
+    return commandType === 'get';
+  }
+
+  static isRequestCommandType(commandType: unknown): commandType is 'request' {
+    return commandType === 'request';
+  }
+
   static parse(commands: Uint8Array, endianness?: Endianness) {
     const usedEndianness = endianness ?? this.defaultEndianness;
     const command = commands[0]!;
@@ -193,6 +234,30 @@ export class CommandParser {
       return {
         type: commandType,
         data: { isEcho: commands[1] === 1 ? true : false },
+      };
+    }
+    if (this.isPositionUpdateCommandType(commandType)) {
+      const xPosition = EndianUtils.readUint16(commands, 1, usedEndianness);
+      const yPosition = EndianUtils.readUint16(commands, 3, usedEndianness);
+      return {
+        type: commandType,
+        data: { xPosition, yPosition },
+      };
+    }
+    if (this.isGetCommandType(commandType)) {
+      const xPosition = EndianUtils.readUint16(commands, 1, usedEndianness);
+      const yPosition = EndianUtils.readUint16(commands, 3, usedEndianness);
+      return {
+        type: commandType,
+        data: { xPosition, yPosition },
+      };
+    }
+    if (this.isRequestCommandType(commandType)) {
+      const xPosition = EndianUtils.readUint16(commands, 1, usedEndianness);
+      const yPosition = EndianUtils.readUint16(commands, 3, usedEndianness);
+      return {
+        type: commandType,
+        data: { xPosition, yPosition },
       };
     }
     throw new Error(`Unknown command: ${command}`);
@@ -235,11 +300,28 @@ export class CommandParser {
       commandBuffer[1] = isEcho ? 1 : 0;
       return commandBuffer;
     }
-    if (this.isSetConfigCommandType(command)) {
-      const { isEcho } = data as CommandDatas['setConfig'];
-      const commandBuffer = new Uint8Array(2);
-      commandBuffer[0] = 4;
-      commandBuffer[1] = isEcho ? 1 : 0;
+    if (this.isPositionUpdateCommandType(command)) {
+      const { xPosition, yPosition } = data as CommandDatas['position-update'];
+      const commandBuffer = new Uint8Array(5);
+      commandBuffer[0] = 5;
+      EndianUtils.writeUint16(commandBuffer, 1, xPosition, usedEndianness);
+      EndianUtils.writeUint16(commandBuffer, 3, yPosition, usedEndianness);
+      return commandBuffer;
+    }
+    if (this.isGetCommandType(command)) {
+      const { xPosition, yPosition } = data as CommandDatas['get'];
+      const commandBuffer = new Uint8Array(5);
+      commandBuffer[0] = 6;
+      EndianUtils.writeUint16(commandBuffer, 1, xPosition, usedEndianness);
+      EndianUtils.writeUint16(commandBuffer, 3, yPosition, usedEndianness);
+      return commandBuffer;
+    }
+    if (this.isRequestCommandType(command)) {
+      const { xPosition, yPosition } = data as CommandDatas['request'];
+      const commandBuffer = new Uint8Array(5);
+      commandBuffer[0] = 7;
+      EndianUtils.writeUint16(commandBuffer, 1, xPosition, usedEndianness);
+      EndianUtils.writeUint16(commandBuffer, 3, yPosition, usedEndianness);
       return commandBuffer;
     }
     throw new Error(`Unknown command: ${command}`);
@@ -335,6 +417,12 @@ export class BufferedCommandParser {
         return 3;
       case 4: // setConfig command - 1 byte command + 1 byte isEcho = 2 bytes
         return 2;
+      case 5: // position-update command - 1 byte command + 2 bytes x + 2 bytes y = 5 bytes
+        return 5;
+      case 6: // get command - 1 byte command + 2 bytes x + 2 bytes y = 5 bytes
+        return 5;
+      case 7: // request command - 1 byte command + 2 bytes x + 2 bytes y = 5 bytes
+        return 5;
       default:
         return -1; // Unknown command
     }
